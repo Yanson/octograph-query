@@ -2,6 +2,8 @@
 
 A Go web service for querying and visualising electricity pricing data from InfluxDB. 
 
+<img src="README_example.png" alt="Example chart" width="360" />
+
 **Note:** This service is designed to be run alongside the [Yanson/octograph](https://github.com/Yanson/octograph) which includes it in its Docker Compose setup.
 
 ## Features
@@ -61,7 +63,7 @@ docker run --rm -p 8080:8080 \
 ## Query Parameters
 
 - `location` (required): The location to query.
-- `format`: `image`, `html`, or `csv` (default: `html`).
+- `format`: `png`, `html`, or `csv` (default: `html`).
 - `width`, `height`: Chart image size in pixels (defaults: 720x338, sensible range: width 200–2000, height 100–1200).
 
 ## Example Usage
@@ -69,7 +71,7 @@ docker run --rm -p 8080:8080 \
 - HTML chart:  
   `http://localhost:8080/data?location=Home&format=html`
 - PNG image:  
-  `http://localhost:8080/data?location=Home&format=image&width=800&height=400`
+  `http://localhost:8080/data?location=Home&format=png&width=800&height=400`
 - CSV export:  
   `http://localhost:8080/data?location=Home&format=csv`
 

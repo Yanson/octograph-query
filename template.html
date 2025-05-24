@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Electricity Pricing Chart</title>
+    <style>
+        img {
+            width: {{.DisplayWidth}}px;
+            height: {{.DisplayHeight}}px;
+        }
+    </style>
+</head>
+<body>
+    <img src="?format=png&location={{.Location}}&width={{.Width}}&height={{.Height}}" alt="Chart">
+</body>
+</html>

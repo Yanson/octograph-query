@@ -287,12 +287,15 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, deb
 		}
 	}()
 
-	const marginLeft = 50.0
-	const marginBottom = 30.0
-	const marginTop = 20.0
-	const marginRight = 20.0
+	const marginLeft = 40.0
+	const marginBottom = 40.0
+	const marginTop = 30.0
+	const marginRight = 40.0
+	const cornerRadius = 30
 	const gradientStep = 8
+	const yLabelInterval = 10.0
 	const yMinNudge = 6
+	const xNudge = 10.0
 
 	dc := gg.NewContext(width, height)
 	dc.SetRGB(1, 1, 1)
@@ -329,10 +332,10 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, deb
 		}
 	}
 
-	// Round up maxY to the nearest 10
-	yMax := math.Ceil(maxY/10) * 10
-	if yMax < 10 {
-		yMax = 10
+	// Round up maxY to the nearest interval
+	yMax := math.Ceil(maxY/yLabelInterval) * yLabelInterval
+	if yMax < yLabelInterval {
+		yMax = yLabelInterval
 	}
 
 	// Round down minY to the nearest 5 if there are negative values
@@ -348,23 +351,20 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, deb
 	yRange := yMax - yMin
 	yScaleFactor := plotH / yRange
 
-	// Calculate where the zero line is positioned
-	zeroY := float64(height) - marginBottom
-	if hasNegative {
-		zeroY = float64(height) - marginBottom + (yMin * yScaleFactor)
-	}
-
 	// Thresholds
 	thresholds := []struct {
 		min, max float64
 		color    color.NRGBA
 	}{
-		{math.Inf(-1), -0.01, color.NRGBA{105, 115, 191, 255}},
-		{-0.01, 10, color.NRGBA{115, 191, 105, 255}},
+		{math.Inf(-1), 0, color.NRGBA{105, 115, 191, 255}},
+		{0, 10, color.NRGBA{115, 191, 105, 255}},
 		{10, 20, color.NRGBA{234, 184, 57, 255}},
 		{20, 30, color.NRGBA{242, 73, 92, 255}},
 		{30, math.Inf(+1), color.NRGBA{196, 22, 42, 255}},
 	}
+
+	dc.DrawRoundedRectangle(marginLeft, marginTop, plotW, plotH, cornerRadius)
+	dc.Clip()
 
 	dc.SetColor(color.Black)
 	dc.DrawRectangle(marginLeft, marginTop, plotW, plotH)
@@ -393,23 +393,8 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, deb
 		dc.Fill()
 	}
 
-	// Axes
-	dc.SetColor(color.Gray{64})
-	dc.SetLineWidth(1)
-	dc.DrawLine(marginLeft, marginTop, marginLeft, float64(height)-marginBottom)
-	dc.Stroke()
-	dc.DrawLine(marginLeft, float64(height)-marginBottom, float64(width)-marginRight, float64(height)-marginBottom)
-	dc.Stroke()
+	dc.ResetClip()
 
-	// Draw zero line if we have negative values
-	if hasNegative {
-		dc.SetColor(color.Gray{128})
-		dc.SetLineWidth(1)
-		dc.DrawLine(marginLeft, zeroY, float64(width)-marginRight, zeroY)
-		dc.Stroke()
-	}
-
-	// Load font
 	if face, err := gg.LoadFontFace("Inter_18pt-Light.ttf", 16); err == nil {
 		dc.SetFontFace(face)
 	} else {
@@ -417,27 +402,26 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, deb
 	}
 
 	// Y-axis labels
-	// Positive labels (every 10 units)
-	for v := 0.0; v <= yMax; v += 10 {
+	dc.SetColor(color.Gray{64})
+
+	// Zero and positive labels
+	for v := 0.0; v <= yMax; v += yLabelInterval {
 		y := float64(height) - marginBottom - ((v - yMin) * yScaleFactor)
 		if !hasNegative && v == 0 {
 			y = y - yMinNudge
 		}
+		if v == yMax || (v == 0 && !hasNegative) {
+			labelXNudge = xNudge
+		}
 		label := fmt.Sprintf("%.0fp", v)
-		dc.SetColor(color.Gray{64})
-		dc.DrawStringAnchored(label, marginLeft-8, y, 1, 0.5)
+		dc.DrawStringAnchored(label, marginLeft-8+labelXNudge, y-labelYNudge, 1, 0.5)
 	}
-
-	// Draw a label at zero
-	dc.SetColor(color.Gray{64})
 
 	// Negative label (just the minimum)
 	if hasNegative {
 		y := float64(height) - marginBottom - ((yMin - yMin) * yScaleFactor)
-		// Also shift the minimum label up if it's at the bottom of the chart
 		label := fmt.Sprintf("%.0fp", yMin)
-		dc.SetColor(color.Gray{64})
-		dc.DrawStringAnchored(label, marginLeft-8, y-yMinNudge, 1, 0.5)
+		dc.DrawStringAnchored(label, marginLeft-8+xNudge, y-yMinNudge, 1, 0.5)
 	}
 
 	// X-axis labels
@@ -446,6 +430,11 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, deb
 		t := startTime.Add(time.Duration(hour) * time.Hour)
 		label := t.Format("3pm") // 12am, 3am, 6pm, etc.
 		x := marginLeft + (float64(hour)/24)*plotW
+		if hour == 0 {
+			x += xNudge
+		} else if hour == 24 {
+			x -= xNudge
+		}
 		y := float64(height) - marginBottom + 20 // Increased offset to move labels further down
 		dc.DrawStringAnchored(label, x, y, 0.5, 0)
 	}

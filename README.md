@@ -2,7 +2,7 @@
 
 A Go web service for querying and visualising electricity pricing data from InfluxDB. 
 
-<img src="README_example.png" alt="Example chart" width="360" />
+<img src="README_example.png" alt="Example chart" width="507" />
 
 **Note:** This service is designed to be run alongside the [Yanson/octograph](https://github.com/Yanson/octograph) which includes it in its Docker Compose setup.
 

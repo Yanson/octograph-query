@@ -11,7 +11,8 @@ FROM alpine:latest
 WORKDIR /app
 RUN apk add --no-cache tzdata
 COPY --from=builder /app/octograph-query .
-COPY template.html .
+COPY template-default.html .
+COPY template-iphone16pro.html .
 COPY Inter_18pt-Light.ttf .
 COPY Inter_18pt-SemiBold.ttf .
 EXPOSE 8080

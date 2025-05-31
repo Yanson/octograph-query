@@ -13,6 +13,7 @@ RUN apk add --no-cache tzdata
 COPY --from=builder /app/octograph-query .
 COPY template-default.html .
 COPY template-iphone16pro.html .
+COPY template-full.html .
 COPY Inter_18pt-Light.ttf .
 COPY Inter_18pt-SemiBold.ttf .
 EXPOSE 8080

@@ -91,6 +91,7 @@ type QueryParams struct {
 	Width    int
 	Height   int
 	DebugNow time.Time
+	Template string
 }
 
 func handleQuery(w http.ResponseWriter, r *http.Request) {
@@ -179,12 +180,38 @@ func parseQueryParams(r *http.Request) (QueryParams, error) {
 		debugNow = parsedTime
 	}
 
+	// Process the template parameter
+	template := "default" // Default template
+	if templateParam := r.URL.Query().Get("template"); templateParam != "" {
+		// Check that the template parameter contains only alphanumeric characters
+		validTemplate := true
+		for _, char := range templateParam {
+			if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9')) {
+				validTemplate = false
+				break
+			}
+		}
+
+		// Check if the template file exists
+		if validTemplate {
+			templateFile := fmt.Sprintf("template-%s.html", templateParam)
+			if _, err := os.Stat(templateFile); err == nil {
+				template = templateParam
+			} else {
+				log.Printf("Template file not found: %s", templateFile)
+			}
+		} else {
+			log.Printf("Invalid template parameter (non-alphanumeric): %s", templateParam)
+		}
+	}
+
 	return QueryParams{
 		Location: location,
 		Format:   format,
 		Width:    width,
 		Height:   height,
 		DebugNow: debugNow,
+		Template: template,
 	}, nil
 }
 
@@ -246,7 +273,8 @@ func queryDatapoints(params QueryParams, now time.Time) ([]datapoint, error) {
 
 func renderHtml(w http.ResponseWriter, params QueryParams) error {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	tmpl, err := template.ParseFiles("template.html")
+	templateFile := fmt.Sprintf("template-%s.html", params.Template)
+	tmpl, err := template.ParseFiles(templateFile)
 	if err != nil {
 		return fmt.Errorf("template error: %w", err)
 	}

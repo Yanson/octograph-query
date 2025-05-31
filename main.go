@@ -90,6 +90,7 @@ type QueryParams struct {
 	Format   string
 	Width    int
 	Height   int
+	DebugNow time.Time
 }
 
 func handleQuery(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +115,7 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	case "png":
-		renderPng(w, points, params.Width, params.Height)
+		renderPng(w, points, params.Width, params.Height, params.DebugNow)
 	case "csv":
 		renderCsv(w, points)
 	default:
@@ -154,11 +155,22 @@ func parseQueryParams(r *http.Request) (QueryParams, error) {
 		height = hVal
 	}
 
+	// Parse optional debugNow parameter
+	var debugNow time.Time
+	if debugTimeStr := r.URL.Query().Get("debugNow"); debugTimeStr != "" {
+		parsedTime, err := time.Parse("2006-01-02T15:04", debugTimeStr)
+		if err != nil {
+			return QueryParams{}, fmt.Errorf("invalid 'debugNow' parameter format, expected YYYY-MM-DDTHH:MM")
+		}
+		debugNow = parsedTime
+	}
+
 	return QueryParams{
 		Location: location,
 		Format:   format,
 		Width:    width,
 		Height:   height,
+		DebugNow: debugNow,
 	}, nil
 }
 
@@ -183,7 +195,15 @@ func queryDatapoints(params QueryParams) ([]datapoint, error) {
 		location = time.UTC // fallback
 	}
 
-	nowUK := time.Now().In(location)
+	// Use debugNow if provided, otherwise use current time
+	var nowUK time.Time
+	if !params.DebugNow.IsZero() {
+		nowUK = params.DebugNow.In(location)
+		log.Printf("Using debug time: %s", nowUK.Format(time.RFC3339))
+	} else {
+		nowUK = time.Now().In(location)
+	}
+
 	startOfDayUK := time.Date(nowUK.Year(), nowUK.Month(), nowUK.Day(), 0, 0, 0, 0, location)
 	endOfDayUK := startOfDayUK.Add(24 * time.Hour)
 
@@ -231,18 +251,27 @@ func renderHtml(w http.ResponseWriter, params QueryParams) error {
 	if err != nil {
 		return fmt.Errorf("template error: %w", err)
 	}
+
+	// Create debugNowStr for the template if debugNow is provided
+	var debugNowStr string
+	if !params.DebugNow.IsZero() {
+		debugNowStr = params.DebugNow.Format("2006-01-02T15:04")
+	}
+
 	data := struct {
 		Location      string
 		Width         int
 		Height        int
 		DisplayWidth  int
 		DisplayHeight int
+		DebugNowStr   string
 	}{
 		Location:      html.EscapeString(params.Location),
 		Width:         params.Width,
 		Height:        params.Height,
 		DisplayWidth:  params.Width / 2,
 		DisplayHeight: params.Height / 2,
+		DebugNowStr:   debugNowStr,
 	}
 	if err := tmpl.Execute(w, data); err != nil {
 		return fmt.Errorf("template execution error: %w", err)
@@ -250,7 +279,7 @@ func renderHtml(w http.ResponseWriter, params QueryParams) error {
 	return nil
 }
 
-func renderPng(w http.ResponseWriter, points []datapoint, width, height int) {
+func renderPng(w http.ResponseWriter, points []datapoint, width, height int, debugNow time.Time) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("Recovered in renderPng: %v\n", r)
@@ -262,6 +291,7 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int) {
 	const marginBottom = 30.0
 	const marginTop = 20.0
 	const marginRight = 20.0
+	const yMinNudge = 6
 
 	dc := gg.NewContext(width, height)
 	dc.SetRGB(1, 1, 1)
@@ -283,27 +313,53 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int) {
 		return points[i].Time.Before(points[j].Time)
 	})
 
-	// Max Y
+	// Find Y range
 	maxY := 0.0
+	minY := 0.0
+	hasNegative := false
+
 	for _, pt := range points {
 		if pt.Value > maxY {
 			maxY = pt.Value
 		}
+		if pt.Value < minY {
+			minY = pt.Value
+			hasNegative = true
+		}
 	}
+
+	// Round up maxY to the nearest 10
 	yMax := math.Ceil(maxY/10) * 10
 	if yMax < 10 {
 		yMax = 10
 	}
 
+	// Round down minY to the nearest 5 if there are negative values
+	yMin := 0.0
+	if hasNegative {
+		yMin = math.Floor(minY/5) * 5
+	}
+
 	plotW := float64(width) - marginLeft - marginRight
 	plotH := float64(height) - marginTop - marginBottom
+
+	// Y-axis scaling factor (accounting for positive and negative values)
+	yRange := yMax - yMin
+	yScaleFactor := plotH / yRange
+
+	// Calculate where the zero line is positioned
+	zeroY := float64(height) - marginBottom
+	if hasNegative {
+		zeroY = float64(height) - marginBottom + (yMin * yScaleFactor)
+	}
 
 	// Thresholds
 	thresholds := []struct {
 		min, max float64
 		color    color.NRGBA
 	}{
-		{0, 10, color.NRGBA{115, 191, 105, 255}},
+		{math.Inf(-1), -0.01, color.NRGBA{105, 115, 191, 255}},
+		{-0.01, 10, color.NRGBA{115, 191, 105, 255}},
 		{10, 20, color.NRGBA{234, 184, 57, 255}},
 		{20, 30, color.NRGBA{242, 73, 92, 255}},
 		{30, math.Inf(+1), color.NRGBA{196, 22, 42, 255}},
@@ -314,17 +370,17 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int) {
 	dc.Fill()
 
 	for _, t := range thresholds {
-		// Clamp to chart yMax
+		// Clamp to chart range
 		low := math.Min(t.max, yMax)
-		high := math.Max(t.min, 0)
+		high := math.Max(t.min, yMin)
 
 		if low <= high {
 			log.Printf("Skipping band min %.1f to max %.1f: invalid range", t.min, t.max)
 			continue
 		}
 
-		y1 := float64(height) - marginBottom - (low / yMax * plotH)
-		y2 := float64(height) - marginBottom - (high / yMax * plotH)
+		y1 := float64(height) - marginBottom - ((low - yMin) * yScaleFactor)
+		y2 := float64(height) - marginBottom - ((high - yMin) * yScaleFactor)
 
 		if math.IsNaN(y1) || math.IsNaN(y2) {
 			log.Printf("Skipping band %.1f–%.1f due to NaN", t.min, t.max)
@@ -344,6 +400,14 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int) {
 	dc.DrawLine(marginLeft, float64(height)-marginBottom, float64(width)-marginRight, float64(height)-marginBottom)
 	dc.Stroke()
 
+	// Draw zero line if we have negative values
+	if hasNegative {
+		dc.SetColor(color.Gray{128})
+		dc.SetLineWidth(1)
+		dc.DrawLine(marginLeft, zeroY, float64(width)-marginRight, zeroY)
+		dc.Stroke()
+	}
+
 	// Load font
 	if face, err := gg.LoadFontFace("Inter_18pt-Light.ttf", 16); err == nil {
 		dc.SetFontFace(face)
@@ -352,17 +416,27 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int) {
 	}
 
 	// Y-axis labels
+	// Positive labels (every 10 units)
 	for v := 0.0; v <= yMax; v += 10 {
-		y := float64(height) - marginBottom - (v / yMax * plotH)
-
-		label := fmt.Sprintf("%.0fp", v)
-
-		// Shift 0 label slightly upward to avoid overlap with x-axis
-		if v == 0 {
-			y -= 10
+		y := float64(height) - marginBottom - ((v - yMin) * yScaleFactor)
+		if !hasNegative && v == 0 {
+			y = y - yMinNudge
 		}
-
+		label := fmt.Sprintf("%.0fp", v)
+		dc.SetColor(color.Gray{64})
 		dc.DrawStringAnchored(label, marginLeft-8, y, 1, 0.5)
+	}
+
+	// Draw a label at zero
+	dc.SetColor(color.Gray{64})
+
+	// Negative label (just the minimum)
+	if hasNegative {
+		y := float64(height) - marginBottom - ((yMin - yMin) * yScaleFactor)
+		// Also shift the minimum label up if it's at the bottom of the chart
+		label := fmt.Sprintf("%.0fp", yMin)
+		dc.SetColor(color.Gray{64})
+		dc.DrawStringAnchored(label, marginLeft-8, y-yMinNudge, 1, 0.5)
 	}
 
 	// X-axis labels
@@ -376,7 +450,13 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int) {
 	}
 
 	// Find point nearest current time
-	now := time.Now().In(loc)
+	var now time.Time
+	if !debugNow.IsZero() {
+		now = debugNow.In(loc)
+	} else {
+		now = time.Now().In(loc)
+	}
+
 	closestIndex := 0
 	minDiff := math.MaxFloat64
 	for i, pt := range points {
@@ -402,9 +482,9 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int) {
 	dc.SetLineWidth(2) // Increase the line width
 	for i := 0; i < len(points)-1; i++ {
 		x1 := marginLeft + (points[i].Time.Sub(startTime).Hours()/24)*plotW
-		y1 := float64(height) - marginBottom - (points[i].Value/yMax)*plotH
+		y1 := float64(height) - marginBottom - ((points[i].Value - yMin) * yScaleFactor)
 		x2 := marginLeft + (points[i+1].Time.Sub(startTime).Hours()/24)*plotW
-		y2 := float64(height) - marginBottom - (points[i+1].Value/yMax)*plotH
+		y2 := float64(height) - marginBottom - ((points[i+1].Value - yMin) * yScaleFactor)
 		dc.DrawLine(x1, y1, x2, y2)
 		dc.Stroke()
 	}
@@ -418,7 +498,7 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int) {
 
 	current := points[closestIndex]
 	cx := marginLeft + (current.Time.Sub(startTime).Hours()/24.0)*plotW
-	cy := float64(height) - marginBottom - (current.Value/yMax)*plotH
+	cy := float64(height) - marginBottom - ((current.Value - yMin) * yScaleFactor)
 
 	// Draw circle
 	dc.SetColor(lineColor)

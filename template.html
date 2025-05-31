@@ -10,6 +10,6 @@
     </style>
 </head>
 <body>
-    <img src="?format=png&location={{.Location}}&width={{.Width}}&height={{.Height}}" alt="Chart">
+    <img src="?format=png&location={{.Location}}&width={{.Width}}&height={{.Height}}{{if .DebugNowStr}}&debugNow={{.DebugNowStr}}{{end}}" alt="Chart">
 </body>
 </html>

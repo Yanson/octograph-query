@@ -136,8 +136,8 @@ func parseQueryParams(r *http.Request) (QueryParams, error) {
 		format = "html"
 	}
 
-	width := 720
-	height := 338
+	width := 1014
+	height := 474
 
 	if wStr := r.URL.Query().Get("width"); wStr != "" {
 		wVal, err := strconv.Atoi(wStr)
@@ -291,6 +291,7 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, deb
 	const marginBottom = 30.0
 	const marginTop = 20.0
 	const marginRight = 20.0
+	const gradientStep = 8
 	const yMinNudge = 6
 
 	dc := gg.NewContext(width, height)
@@ -466,12 +467,19 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, deb
 			closestIndex = i
 		}
 	}
-	currentPoint := points[closestIndex]
 
-	// Determine line color from current value
-	var lineColor color.Color = color.Black
+	// Safety check - ensure closestIndex is valid
+	if closestIndex < 0 {
+		closestIndex = 0
+	} else if closestIndex >= len(points) {
+		closestIndex = len(points) - 1
+	}
+
+	currentValue := points[closestIndex].Value
+
+	var lineColor = color.NRGBA{0, 0, 0, 255}
 	for _, t := range thresholds {
-		if currentPoint.Value >= t.min && currentPoint.Value < t.max {
+		if currentValue >= t.min && currentValue < t.max {
 			lineColor = t.color
 			break
 		}
@@ -479,12 +487,21 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, deb
 
 	// Plot line
 	dc.SetColor(lineColor)
-	dc.SetLineWidth(2) // Increase the line width
+	dc.SetLineWidth(3)
+	dc.SetDash(5, 5)
 	for i := 0; i < len(points)-1; i++ {
 		x1 := marginLeft + (points[i].Time.Sub(startTime).Hours()/24)*plotW
 		y1 := float64(height) - marginBottom - ((points[i].Value - yMin) * yScaleFactor)
 		x2 := marginLeft + (points[i+1].Time.Sub(startTime).Hours()/24)*plotW
 		y2 := float64(height) - marginBottom - ((points[i+1].Value - yMin) * yScaleFactor)
+		alpha := uint8(255)
+		if i < closestIndex {
+			alpha = uint8(math.Max(255-(gradientStep*3*2)-float64(closestIndex-i)*gradientStep, 255-(gradientStep*8*2)))
+		}
+		dc.SetColor(color.NRGBA{lineColor.R, lineColor.G, lineColor.B, alpha})
+		if i == closestIndex {
+			dc.SetDash()
+		}
 		dc.DrawLine(x1, y1, x2, y2)
 		dc.Stroke()
 	}

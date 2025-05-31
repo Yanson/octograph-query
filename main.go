@@ -100,7 +100,21 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	points, err := queryDatapoints(params)
+	loc, err := time.LoadLocation("Europe/London")
+	if err != nil {
+		log.Println("Failed to load UK timezone:", err)
+		loc = time.UTC // fallback
+	}
+
+	var now time.Time
+	if !params.DebugNow.IsZero() {
+		now = params.DebugNow.In(loc)
+	} else {
+		now = time.Now().In(loc)
+	}
+	log.Printf("Assuming it is now: %s", now.Format(time.RFC3339))
+
+	points, err := queryDatapoints(params, now)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -115,7 +129,7 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	case "png":
-		renderPng(w, points, params.Width, params.Height, params.DebugNow)
+		renderPng(w, points, params.Width, params.Height, now)
 	case "csv":
 		renderCsv(w, points)
 	default:
@@ -188,29 +202,14 @@ func addExpiryHeader(w http.ResponseWriter) {
 	w.Header().Set("Expires", next.Format(http.TimeFormat))
 }
 
-func queryDatapoints(params QueryParams) ([]datapoint, error) {
-	location, err := time.LoadLocation("Europe/London")
-	if err != nil {
-		log.Println("Failed to load UK timezone:", err)
-		location = time.UTC // fallback
-	}
+func queryDatapoints(params QueryParams, now time.Time) ([]datapoint, error) {
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	endOfDay := startOfDay.Add(24 * time.Hour)
 
-	// Use debugNow if provided, otherwise use current time
-	var nowUK time.Time
-	if !params.DebugNow.IsZero() {
-		nowUK = params.DebugNow.In(location)
-		log.Printf("Using debug time: %s", nowUK.Format(time.RFC3339))
-	} else {
-		nowUK = time.Now().In(location)
-	}
+	startUTC := startOfDay.UTC()
+	endUTC := endOfDay.UTC().Add(30 * time.Minute)
 
-	startOfDayUK := time.Date(nowUK.Year(), nowUK.Month(), nowUK.Day(), 0, 0, 0, 0, location)
-	endOfDayUK := startOfDayUK.Add(24 * time.Hour)
-
-	startUTC := startOfDayUK.UTC()
-	endUTC := endOfDayUK.UTC().Add(30 * time.Minute)
-
-	log.Printf("Querying data from %s to %s (UTC)", startUTC.Format(time.RFC3339), endUTC.Format(time.RFC3339))
+	log.Printf("Querying data between %s and %s", startUTC.Format(time.RFC3339), endUTC.Format(time.RFC3339))
 
 	query := fmt.Sprintf(`
 		from(bucket: "%s")
@@ -279,7 +278,7 @@ func renderHtml(w http.ResponseWriter, params QueryParams) error {
 	return nil
 }
 
-func renderPng(w http.ResponseWriter, points []datapoint, width, height int, debugNow time.Time) {
+func renderPng(w http.ResponseWriter, points []datapoint, width, height int, now time.Time) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("Recovered in renderPng: %v\n", r)
@@ -407,8 +406,9 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, deb
 	// Zero and positive labels
 	for v := 0.0; v <= yMax; v += yLabelInterval {
 		y := float64(height) - marginBottom - ((v - yMin) * yScaleFactor)
-		if !hasNegative && v == 0 {
-			y = y - yMinNudge
+		labelXNudge, labelYNudge := 0.0, 0.0
+		if v == 0 && !hasNegative {
+			labelYNudge = yMinNudge
 		}
 		if v == yMax || (v == 0 && !hasNegative) {
 			labelXNudge = xNudge
@@ -439,14 +439,7 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, deb
 		dc.DrawStringAnchored(label, x, y, 0.5, 0)
 	}
 
-	// Find point nearest current time
-	var now time.Time
-	if !debugNow.IsZero() {
-		now = debugNow.In(loc)
-	} else {
-		now = time.Now().In(loc)
-	}
-
+	// Find index of the closest point to now
 	closestIndex := 0
 	minDiff := math.MaxFloat64
 	for i, pt := range points {
@@ -455,13 +448,6 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, deb
 			minDiff = diff
 			closestIndex = i
 		}
-	}
-
-	// Safety check - ensure closestIndex is valid
-	if closestIndex < 0 {
-		closestIndex = 0
-	} else if closestIndex >= len(points) {
-		closestIndex = len(points) - 1
 	}
 
 	currentValue := points[closestIndex].Value

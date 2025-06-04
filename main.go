@@ -231,10 +231,10 @@ func addExpiryHeader(w http.ResponseWriter) {
 
 func queryDatapoints(params QueryParams, now time.Time) ([]datapoint, error) {
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	endOfDay := startOfDay.Add(24 * time.Hour)
+	endOfTomorrow := startOfDay.Add(48 * time.Hour)
 
 	startUTC := startOfDay.UTC()
-	endUTC := endOfDay.UTC().Add(30 * time.Minute)
+	endUTC := endOfTomorrow.UTC()
 
 	log.Printf("Querying data between %s and %s", startUTC.Format(time.RFC3339), endUTC.Format(time.RFC3339))
 
@@ -343,6 +343,19 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, now
 	sort.Slice(points, func(i, j int) bool {
 		return points[i].Time.Before(points[j].Time)
 	})
+
+	// Split points into today and tomorrow
+	todayEnd := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Add(24 * time.Hour)
+	todayPoints := make([]datapoint, 0)
+	tomorrowPoints := make([]datapoint, 0)
+	for _, pt := range points {
+		if pt.Time.Before(todayEnd) || pt.Time.Equal(todayEnd) {
+			todayPoints = append(todayPoints, pt)
+		}
+		if pt.Time.Equal(todayEnd) || pt.Time.After(todayEnd) {
+			tomorrowPoints = append(tomorrowPoints, pt)
+		}
+	}
 
 	// Find Y range
 	maxY := 0.0
@@ -453,7 +466,7 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, now
 	}
 
 	// X-axis labels
-	startTime := time.Date(points[0].Time.Year(), points[0].Time.Month(), points[0].Time.Day(), 0, 0, 0, 0, loc)
+	startTime := time.Date(todayPoints[0].Time.Year(), todayPoints[0].Time.Month(), todayPoints[0].Time.Day(), 0, 0, 0, 0, loc)
 	for hour := 0; hour <= 24; hour += 2 {
 		t := startTime.Add(time.Duration(hour) * time.Hour)
 		label := t.Format("3pm") // 12am, 3am, 6pm, etc.
@@ -467,10 +480,27 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, now
 		dc.DrawStringAnchored(label, x, y, 0.5, 0)
 	}
 
+	// Plot tomorrow's line
+	if len(tomorrowPoints) > 1 {
+		tomorrowStartTime := time.Date(tomorrowPoints[0].Time.Year(), tomorrowPoints[0].Time.Month(), tomorrowPoints[0].Time.Day(), 0, 0, 0, 0, loc)
+		dc.SetColor(color.NRGBA{32, 32, 32, 190})
+		dc.SetLineWidth(1)
+		dc.SetDash(2, 2)
+		for i := 0; i < len(tomorrowPoints)-1; i++ {
+			x1 := marginLeft + (tomorrowPoints[i].Time.Sub(tomorrowStartTime).Hours()/24)*plotW
+			y1 := float64(height) - marginBottom - ((tomorrowPoints[i].Value - yMin) * yScaleFactor)
+			x2 := marginLeft + (tomorrowPoints[i+1].Time.Sub(tomorrowStartTime).Hours()/24)*plotW
+			y2 := float64(height) - marginBottom - ((tomorrowPoints[i+1].Value - yMin) * yScaleFactor)
+			dc.DrawLine(x1, y1, x2, y2)
+			dc.Stroke()
+		}
+		dc.SetDash()
+	}
+
 	// Find index of the closest point to now
 	closestIndex := 0
 	minDiff := math.MaxFloat64
-	for i, pt := range points {
+	for i, pt := range todayPoints {
 		diff := math.Abs(pt.Time.Sub(now).Seconds())
 		if diff < minDiff {
 			minDiff = diff
@@ -478,7 +508,7 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, now
 		}
 	}
 
-	currentValue := points[closestIndex].Value
+	currentValue := todayPoints[closestIndex].Value
 
 	var lineColor = color.NRGBA{0, 0, 0, 255}
 	for _, t := range thresholds {
@@ -488,18 +518,18 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, now
 		}
 	}
 
-	// Plot line
+	// Plot today's line
 	dc.SetColor(lineColor)
 	dc.SetLineWidth(3)
 	dc.SetDash(5, 5)
-	for i := 0; i < len(points)-1; i++ {
-		x1 := marginLeft + (points[i].Time.Sub(startTime).Hours()/24)*plotW
-		y1 := float64(height) - marginBottom - ((points[i].Value - yMin) * yScaleFactor)
-		x2 := marginLeft + (points[i+1].Time.Sub(startTime).Hours()/24)*plotW
-		y2 := float64(height) - marginBottom - ((points[i+1].Value - yMin) * yScaleFactor)
+	for i := 0; i < len(todayPoints)-1; i++ {
+		x1 := marginLeft + (todayPoints[i].Time.Sub(startTime).Hours()/24)*plotW
+		y1 := float64(height) - marginBottom - ((todayPoints[i].Value - yMin) * yScaleFactor)
+		x2 := marginLeft + (todayPoints[i+1].Time.Sub(startTime).Hours()/24)*plotW
+		y2 := float64(height) - marginBottom - ((todayPoints[i+1].Value - yMin) * yScaleFactor)
 		alpha := uint8(255)
 		if i < closestIndex {
-			alpha = uint8(math.Max(255-(gradientStep*3*2)-float64(closestIndex-i)*gradientStep, 255-(gradientStep*8*2)))
+			alpha = uint8(math.Max(255-(gradientStep*8)-float64(closestIndex-i)*gradientStep, 255-(gradientStep*22)))
 		}
 		dc.SetColor(color.NRGBA{lineColor.R, lineColor.G, lineColor.B, alpha})
 		if i == closestIndex {
@@ -516,7 +546,7 @@ func renderPng(w http.ResponseWriter, points []datapoint, width, height int, now
 		log.Println("Failed to load font for current value label:", err)
 	}
 
-	current := points[closestIndex]
+	current := todayPoints[closestIndex]
 	cx := marginLeft + (current.Time.Sub(startTime).Hours()/24.0)*plotW
 	cy := float64(height) - marginBottom - ((current.Value - yMin) * yScaleFactor)
 

@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25.3-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -17,6 +17,7 @@ COPY template-full.html .
 COPY Inter_18pt-Light.ttf .
 COPY Inter_18pt-SemiBold.ttf .
 EXPOSE 8080
-ENV HTTP_PORT=8080
+ENV HTTP_PORT=8080 \
+    LOG_LEVEL=info
 CMD ["./octograph-query"]
 
